@@ -28,7 +28,7 @@ model-checking function. If the initial state *is* in the returned set of
 states then the model satisifes the spec, and the corresponding FDR
 assertion will succeed. 
 
-See Huth and Ryan, "Logic in Computer Science" for details of the
+See Huth and Ryan, *Logic in Computer Science*, for details of the
 algorithm (http://www.cs.bham.ac.uk/research/lics/)
 
 I've included an example model, and several example specifications, to 
