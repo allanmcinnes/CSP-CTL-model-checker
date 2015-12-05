@@ -1,0 +1,183 @@
+{-  
+    Explicit state CTL model-checking implemented in CSPm
+    
+    Note this this model-checker DOES NOT apply CTL formulas to CSP processes!
+    It is a hack that tricks FDR into performing CTL model-checking of a user
+    defined finite state machine expressed as several different sets (not a 
+    labelled transition system, or a CSP process expression). 
+    
+    Why? Because we can!
+    --------------------
+    
+    Machine readable CSP (i.e. the one used to write scripts for FDR and ProBE)
+    includes an embedded functional programming language. Which happens to have
+    some pretty good set manipulation facilities. A combination that makes
+    it particularly good for implementing a CTL model-checker.
+
+    This script implements such a CTL model-checker. The model-checker takes as
+    input a finite state model (expressed as sets of states, transitions, and
+    labels), and a CTL formula (expressed in an AST-like form), and checks that
+    the model satisfies the CTL formula.
+
+    FDR requires some kind of assertion about a process to be made in order to
+    trigger the evaluation of a function. In the case of this script, evaluation
+    of the model-checking function is triggered by performing a trace refinement
+    (i.e language containment) check to see if the distinguished initial state
+    (S.0 by convention) is a member of the set of states returned by the
+    model-checking function. If the initial state *is* in the returned set of
+    states then the model satisifes the spec, and the corresponding FDR
+    assertion will succeed. 
+    
+    See Huth and Ryan, "Logic in Computer Science" for details of the
+    algorithm (http://www.cs.bham.ac.uk/research/lics/)
+    
+    I've included an example model, and several example specifications, to 
+    demonstrate how all of this works. To run, simply load into FDR, and check
+    all assertions.
+    
+    This script demonstrates (if it demonstrates anything at all) both the 
+    power of the CSPm embedded functional language, and the simplicity of the
+    CTL model-checking algorithm. And yes, these are somewhat contradictory
+    points.
+    
+    Copyright (C) 2005 Allan McInnes <allan.mcinnes@acm.org>
+-}
+
+-- ===================== Inputs =====================
+-- A model consisting of
+-- 1. A set of states
+States = { S.0, S.1, S.2, S.3 }
+
+-- 2. A set of transitions
+Trans = { (S.0, S.2), 
+          (S.0, S.3),
+          (S.1, S.0),
+          (S.2, S.3),
+          (S.3, S.0),
+          (S.3, S.1) }
+          
+-- 3. A labeling function
+Labels = { (S.0, {Atom.A, Atom.C}),
+           (S.1, {Atom.C}),
+           (S.2, {Atom.A, Atom.B}),
+           (S.3, {Atom.B}) }
+
+-- Specifications, in the form of some CTL formulas
+Spec1 = EX.Atom.B
+Spec2 = EU.(And.(Atom.A, Atom.B), Atom.C)
+Spec3 = AF.Not.Atom.C
+Spec4 = EX.Atom.C
+Spec5 = AU.(Atom.C, And.(Atom.A, Atom.B))
+
+-- ===================== Output =====================
+-- We use a trace refinement check to see if one of the 
+-- possible states in the SAT set is the initial state, S.0
+
+SAT_States1 = SAT(Spec1)
+assert state?s:SAT_States1 -> STOP [T= state!S.0 -> STOP 
+
+SAT_States2 = SAT(Spec2)
+assert state?s:SAT_States2 -> STOP [T= state!S.0 -> STOP 
+
+SAT_States3 = SAT(Spec3)
+assert state?s:SAT_States3 -> STOP [T= state!S.0 -> STOP 
+
+SAT_States4 = SAT(Spec4)
+assert not state?s:SAT_States4 -> STOP [T= state!S.0 -> STOP
+
+SAT_States5 = SAT(Spec5)
+assert not state?s:SAT_States5 -> STOP [T= state!S.0 -> STOP
+
+
+-- ===================== Implementation =====================
+-- Auxiliary channel used to perform the refinement checks
+channel state: STATE
+
+-- Model state names
+const_MaxState = 10
+datatype STATE = S.{0..const_MaxState}
+
+-- The syntax of CTL
+datatype ATOM = A | B | C | D
+
+datatype CTL_FORMULA 
+    = Top
+    | Bottom
+    | Atom.ATOM
+    | Not.CTL_FORMULA    
+    | And.(CTL_FORMULA, CTL_FORMULA)
+    | Or.(CTL_FORMULA, CTL_FORMULA)
+    | Implic.(CTL_FORMULA, CTL_FORMULA)
+    | AX.CTL_FORMULA
+    | EX.CTL_FORMULA
+    | AU.(CTL_FORMULA, CTL_FORMULA)
+    | EU.(CTL_FORMULA, CTL_FORMULA)
+    | EF.CTL_FORMULA
+    | EG.CTL_FORMULA
+    | AF.CTL_FORMULA
+    | AG.CTL_FORMULA
+    
+-- Primary SAT function (defined via pattern match)
+-- Recurses through a CTL formula, and returns a set of states which
+-- satisfy the formula
+SAT(Top) = States
+SAT(Bottom) = {}
+SAT(Atom.p) = { s | (s, L) <- Labels, member(Atom.p, L) }
+SAT(Not.p) = diff(States, SAT(p))
+SAT(And.(p, q)) = inter(SAT(p), SAT(q))
+SAT(Or.(p, q)) = union(SAT(p), SAT(q))
+SAT(Implic.(p, q)) = SAT(Or.(Not.p, q))
+SAT(AX.p) = SAT(Not.EX.Not.p)
+SAT(EX.p) = SAT_EX(p)
+SAT(AU.(p, q)) = SAT(Not.Or.(EU.(Not.p, And.(Not.p, Not.q)), EG.Not.q))
+SAT(EU.(p, q)) = SAT_EU(p, q)
+SAT(EF.p) = SAT(EU.(Top, p))
+SAT(EG.p) = SAT(Not.AF.Not.p)
+SAT(AF.p) = SAT_AF(p)
+SAT(AG.p) = SAT(Not.EF.Not.p)
+
+-- SAT functions for temporal operators
+SAT_EX(p) = 
+    let
+        X = SAT(p)
+    within
+        pre_E(X)
+        
+SAT_AF(p) = 
+    let
+        Y = SAT(p)
+        f(X) = union(X, pre_A(X))
+    within
+        if Y == States
+        then Y
+        else Fixpoint(f, Y)
+        
+SAT_EU(p,q) = 
+    let
+        W = SAT(p)
+        Y = SAT(q)
+        f(X) = union(X, inter(W, pre_E(X)))
+    within
+        if Y == States
+        then Y
+        else Fixpoint(f, Y)
+        
+-- Pre-Image functions
+-- "There exists" pre-image
+pre_E(X) = { s0 | (s0, s1) <- Trans, member(s1, X) }
+
+-- "For all" pre-image
+-- The set of states which transition to X, and do not transition
+-- to any state outside of X
+pre_A(X) = diff( pre_E(X), pre_E( diff(States, X) ) )
+
+-- Fixpoint function
+-- Computes the fixpoint of a given mapping function when applied to 
+-- a set of states
+Fixpoint(f, X) = 
+    let
+        X' = f(X)
+    within
+        if X == X'
+        then X
+        else Fixpoint(f, X')
